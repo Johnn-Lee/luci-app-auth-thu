@@ -76,10 +76,7 @@ jobs:
           set -euo pipefail
           cd sdk
 
-          cat > .config <<EOF
-          CONFIG_PACKAGE_${{ env.PKG_NAME }}=m
-          CONFIG_SIGNED_PACKAGES=y
-          EOF
+          echo "CONFIG_PACKAGE_${{ env.PKG_NAME }}=m" > .config
 
           if [ "${{ matrix.era }}" = "apk" ]; then
             echo 'CONFIG_USE_APK=y' >> .config
@@ -88,63 +85,9 @@ jobs:
           make defconfig
 
           grep -q '^CONFIG_PACKAGE_${{ env.PKG_NAME }}=m$' .config
-          grep -q '^CONFIG_SIGNED_PACKAGES=y$' .config
 
           if [ "${{ matrix.era }}" = "apk" ]; then
             grep -q '^CONFIG_USE_APK=y$' .config
-          fi
-
-      - name: Prepare signing key
-        shell: bash
-        env:
-          OPKG_SIGNING_KEY: ${{ secrets.OPKG_SIGNING_KEY }}
-          OPKG_SIGNING_PUB: ${{ secrets.OPKG_SIGNING_PUB }}
-          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
-          APK_SIGNING_PUB: ${{ secrets.APK_SIGNING_PUB }}
-        run: |
-          set -euo pipefail
-
-          mkdir -p "public/${{ matrix.era }}"
-
-          if [ "${{ matrix.era }}" = "opkg" ]; then
-            if [ -n "${OPKG_SIGNING_KEY:-}" ] && [ -n "${OPKG_SIGNING_PUB:-}" ]; then
-              printf '%s\n' "$OPKG_SIGNING_KEY" > sdk/key-build
-              printf '%s\n' "$OPKG_SIGNING_PUB" > sdk/key-build.pub
-            else
-              sdk/staging_dir/host/bin/usign \
-                -G \
-                -c 'luci-app-auth-thu feed key' \
-                -s sdk/key-build \
-                -p sdk/key-build.pub
-            fi
-
-            cp sdk/key-build.pub public/opkg/key-build.pub
-          else
-            if [ -n "${APK_SIGNING_KEY:-}" ]; then
-              printf '%s\n' "$APK_SIGNING_KEY" > sdk/private-key.pem
-
-              if [ -n "${APK_SIGNING_PUB:-}" ]; then
-                printf '%s\n' "$APK_SIGNING_PUB" > sdk/public-key.pem
-              else
-                sdk/staging_dir/host/bin/openssl ec \
-                  -in sdk/private-key.pem \
-                  -pubout \
-                  -out sdk/public-key.pem
-              fi
-            else
-              sdk/staging_dir/host/bin/openssl ecparam \
-                -name prime256v1 \
-                -genkey \
-                -noout \
-                -out sdk/private-key.pem
-
-              sdk/staging_dir/host/bin/openssl ec \
-                -in sdk/private-key.pem \
-                -pubout \
-                -out sdk/public-key.pem
-            fi
-
-            cp sdk/public-key.pem public/apk/public-key.pem
           fi
 
       - name: Compile package
@@ -155,15 +98,7 @@ jobs:
 
           make "package/${{ env.PKG_NAME }}/compile" V=sc -j"$(nproc)"
 
-      - name: Generate signed package index
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd sdk
-
-          make package/index V=sc
-
-      - name: Collect feed
+      - name: Collect package
         shell: bash
         run: |
           set -euo pipefail
@@ -176,125 +111,47 @@ jobs:
             exit 1
           fi
 
-          package_dir="$(dirname "$package_file")"
-          cp "$package_file" "public/${{ matrix.era }}/"
+          mkdir -p dist
+          cp "$package_file" "dist/${{ env.PKG_NAME }}.${{ matrix.extension }}"
 
-          if [ "${{ matrix.era }}" = "opkg" ]; then
-            for file in Packages Packages.gz Packages.manifest Packages.sig index.json; do
-              if [ -f "$package_dir/$file" ]; then
-                cp "$package_dir/$file" public/opkg/
-              fi
-            done
+          echo "Built package:"
+          ls -lh "dist/${{ env.PKG_NAME }}.${{ matrix.extension }}"
 
-            test -f public/opkg/Packages.gz
-            test -f public/opkg/Packages.sig
-            test -f public/opkg/key-build.pub
-          else
-            cp "$package_dir/packages.adb" public/apk/
-
-            if [ -f "$package_dir/index.json" ]; then
-              cp "$package_dir/index.json" public/apk/
-            fi
-
-            test -f public/apk/packages.adb
-            test -f public/apk/public-key.pem
-          fi
-
-          echo "Collected ${{ matrix.era }} feed:"
-          find "public/${{ matrix.era }}" -maxdepth 1 -type f -printf '%f\n' | sort
-
-      - name: Upload feed artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: feed_${{ matrix.era }}
-          path: public/${{ matrix.era }}
+          name: ${{ env.PKG_NAME }}-${{ matrix.era }}
+          path: dist/${{ env.PKG_NAME }}.${{ matrix.extension }}
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
-  publish:
-    name: Publish feed
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download opkg feed
+      - name: Download packages
         uses: actions/download-artifact@v4
         with:
-          name: feed_opkg
-          path: public/opkg
+          pattern: ${{ env.PKG_NAME }}-*
+          merge-multiple: true
+          path: dist
 
-      - name: Download apk feed
-        uses: actions/download-artifact@v4
-        with:
-          name: feed_apk
-          path: public/apk
-
-      - name: Prepare site
+      - name: Verify packages
         shell: bash
         run: |
           set -euo pipefail
-
-          touch public/.nojekyll
-
-          test -f public/opkg/Packages.gz
-          test -f public/opkg/Packages.sig
-          test -f public/opkg/key-build.pub
-          test -f public/apk/packages.adb
-          test -f public/apk/public-key.pem
-
-          python3 - <<'PY'
-          from html import escape
-          from pathlib import Path
-          from urllib.parse import quote
-
-          root = Path('public')
-          files = sorted(
-              p.relative_to(root).as_posix()
-              for p in root.rglob('*')
-              if p.is_file() and p.name not in {'index.html', '.nojekyll'}
-          )
-
-          html = [
-              '<!doctype html>',
-              '<html>',
-              '<head>',
-              '  <meta charset="utf-8">',
-              '  <meta name="viewport" content="width=device-width, initial-scale=1">',
-              '  <title>luci-app-auth-thu feed</title>',
-              '</head>',
-              '<body>',
-              '  <h1>luci-app-auth-thu feed</h1>',
-              '  <ul>',
-          ]
-
-          for rel in files:
-              html.append(f'    <li><a href="{quote(rel)}">{escape(rel)}</a></li>')
-
-          html.extend([
-              '  </ul>',
-              '</body>',
-              '</html>',
-          ])
-
-          (root / 'index.html').write_text('\n'.join(html) + '\n', encoding='utf-8')
-          PY
-
-          echo 'Final site:'
-          find public -type f -printf '%P\n' | sort
+          test -f dist/${{ env.PKG_NAME }}.ipk
+          test -f dist/${{ env.PKG_NAME }}.apk
+          ls -lh dist
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            public/opkg/*.ipk
-            public/apk/*.apk
+            dist/${{ env.PKG_NAME }}.ipk
+            dist/${{ env.PKG_NAME }}.apk
           fail_on_unmatched_files: true
-
-      - name: Deploy GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: ./public
-          force_orphan: true
+          generate_release_notes: true
