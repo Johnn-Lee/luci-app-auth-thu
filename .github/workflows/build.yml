@@ -11,6 +11,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PKG_NAME: luci-app-auth-thu
+
 jobs:
   build:
     name: ${{ matrix.era }} build
@@ -19,59 +22,86 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # opkg 体系: OpenWrt / ImmortalWrt 21.02 ~ 23.05
           - era: opkg
-            # 21.02 ~ 23.05 (OpenWrt / ImmortalWrt) use opkg
-            arch: x86_64-openwrt-23.05
+            sdk_url: https://downloads.openwrt.org/releases/23.05.6/targets/x86/64/openwrt-sdk-23.05.6-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            sdk_file: openwrt-sdk-23.05.6-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          # apk 体系: OpenWrt / ImmortalWrt 24.10+
           - era: apk
-            # 24.10+ (OpenWrt / ImmortalWrt) use apk
-            arch: x86_64-openwrt-24.10
+            sdk_url: https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_file: openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
 
     steps:
       - name: checkout
         uses: actions/checkout@v4
 
-      - name: generate usign key
-        if: matrix.era == 'opkg'
+      - name: download and extract sdk
         run: |
-          mkdir -p keys && chmod 777 keys
-          docker run --rm -v "$PWD/keys:/keys" openwrt/sdk:${{ matrix.arch }} \
-            /bin/sh -c "bash setup.sh && staging_dir/host/bin/usign -G -s /keys/key-build -p /keys/key-build.pub"
-          {
-            echo "KEY_BUILD<<USIGN_EOF"
-            cat keys/key-build
-            echo "USIGN_EOF"
-          } >> "$GITHUB_ENV"
+          wget -q "${{ matrix.sdk_url }}"
+          if [[ "${{ matrix.sdk_file }}" == *.zst ]]; then
+            tar --zstd -xf "${{ matrix.sdk_file }}"
+          else
+            tar -xf "${{ matrix.sdk_file }}"
+          fi
+          mv openwrt-sdk-* sdk
+          rm -f "${{ matrix.sdk_file }}"
 
-      - name: generate rsa key
-        if: matrix.era == 'apk'
+      - name: update feeds
         run: |
-          openssl genrsa -traditional -out private-key.pem 2048
-          openssl rsa -in private-key.pem -pubout -out public-key.pem
-          {
-            echo "PRIVATE_KEY<<RSA_EOF"
-            cat private-key.pem
-            echo "RSA_EOF"
-          } >> "$GITHUB_ENV"
+          cd sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-      - name: build
-        uses: openwrt/gh-action-sdk@main
-        env:
-          ARCH: ${{ matrix.arch }}
-          FEEDNAME: auth_thu
-          PACKAGES: luci-app-auth-thu
-          INDEX: 1
-          KEY_BUILD: ${{ env.KEY_BUILD }}
-          PRIVATE_KEY: ${{ env.PRIVATE_KEY }}
-          NO_REFRESH_CHECK: true
+      - name: stage package
+        run: |
+          rm -rf sdk/package/${{ env.PKG_NAME }}
+          mkdir -p sdk/package/${{ env.PKG_NAME }}
+          cp -r ${{ env.PKG_NAME }}/* sdk/package/${{ env.PKG_NAME }}/
+          test -f sdk/package/${{ env.PKG_NAME }}/Makefile
 
-      - name: prepare feed
+      - name: configure
+        run: |
+          cd sdk
+          echo "CONFIG_PACKAGE_${{ env.PKG_NAME }}=m" > .config
+          if [ "${{ matrix.era }}" = "apk" ]; then
+            echo "CONFIG_USE_APK=y" >> .config
+          fi
+          make defconfig
+
+      - name: generate signing keys
         run: |
           mkdir -p public/${{ matrix.era }}
-          cp bin/packages/*/auth_thu/* public/${{ matrix.era }}/
-          if [ "${{ matrix.era }}" = "opkg" ]; then
-            cp keys/key-build.pub public/opkg/
+          if [ "${{ matrix.era }}" = "apk" ]; then
+            # EC-256 密钥, 与 OpenWrt buildroot 默认 apk 签名机制一致
+            sdk/staging_dir/host/bin/openssl ecparam -name prime256v1 -genkey -noout -out sdk/private-key.pem
+            sdk/staging_dir/host/bin/openssl ec -in sdk/private-key.pem -pubout > public/apk/public-key.pem
           else
-            cp public-key.pem public/apk/
+            sdk/staging_dir/host/bin/usign -G -s sdk/key-build -p public/opkg/key-build.pub
+          fi
+
+      - name: compile
+        run: |
+          cd sdk
+          rm -rf bin
+          make package/${{ env.PKG_NAME }}/compile V=sw -j$(nproc)
+
+      - name: generate index
+        run: |
+          cd sdk
+          if [ "${{ matrix.era }}" = "apk" ]; then
+            make package/index
+          else
+            make CONFIG_SIGNED_PACKAGES=y package/index
+          fi
+
+      - name: collect feed
+        run: |
+          if [ "${{ matrix.era }}" = "apk" ]; then
+            cp sdk/bin/packages/x86_64/base/*.apk public/apk/
+            cp sdk/bin/packages/x86_64/base/packages.adb public/apk/
+          else
+            cp sdk/bin/packages/x86_64/base/*.ipk public/opkg/
+            cp sdk/bin/packages/x86_64/base/Packages* public/opkg/
           fi
           ls -l public/${{ matrix.era }}
 
@@ -103,8 +133,9 @@ jobs:
 
       - name: prepare
         run: |
-          tree --dirsfirst --sort name -P '*.apk|*.ipk' --prune --noreport -H "" -T "luci-app-auth-thu feed" --charset utf-8 -o public/index.html public
-          sed -i '/<p class="VERSION">/,/<\/p>/d' public/index.html
+          touch public/.nojekyll
+          ls -R public
+          tree --dirsfirst --sort name -P '*.apk|*.ipk' --prune --noreport -H "" -T "luci-app-auth-thu feed" --charset utf-8 -o public/index.html public || true
 
       - name: deploy
         uses: peaceiris/actions-gh-pages@v4
