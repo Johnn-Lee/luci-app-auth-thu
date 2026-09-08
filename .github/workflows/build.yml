@@ -1,0 +1,115 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.era }} build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - era: opkg
+            # 21.02 ~ 23.05 (OpenWrt / ImmortalWrt) use opkg
+            arch: x86_64-openwrt-23.05
+          - era: apk
+            # 24.10+ (OpenWrt / ImmortalWrt) use apk
+            arch: x86_64-openwrt-24.10
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: generate usign key
+        if: matrix.era == 'opkg'
+        run: |
+          mkdir -p keys && chmod 777 keys
+          docker run --rm -v "$PWD/keys:/keys" openwrt/sdk:${{ matrix.arch }} \
+            /builder/staging_dir/host/bin/usign -G -s /keys/key-build -p /keys/key-build.pub
+          {
+            echo "KEY_BUILD<<USIGN_EOF"
+            cat keys/key-build
+            echo "USIGN_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: generate rsa key
+        if: matrix.era == 'apk'
+        run: |
+          openssl genrsa -traditional -out private-key.pem 2048
+          openssl rsa -in private-key.pem -pubout -out public-key.pem
+          {
+            echo "PRIVATE_KEY<<RSA_EOF"
+            cat private-key.pem
+            echo "RSA_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: build
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.arch }}
+          FEEDNAME: auth-thu
+          PACKAGES: luci-app-auth-thu
+          INDEX: 1
+          KEY_BUILD: ${{ env.KEY_BUILD }}
+          PRIVATE_KEY: ${{ env.PRIVATE_KEY }}
+          NO_REFRESH_CHECK: true
+
+      - name: prepare feed
+        run: |
+          mkdir -p public/${{ matrix.era }}
+          cp bin/packages/*/auth-thu/* public/${{ matrix.era }}/
+          if [ "${{ matrix.era }}" = "opkg" ]; then
+            cp keys/key-build.pub public/opkg/
+          else
+            cp public-key.pem public/apk/
+          fi
+          ls -l public/${{ matrix.era }}
+
+      - name: release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            public/${{ matrix.era }}/*.ipk
+            public/${{ matrix.era }}/*.apk
+
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: feed_${{ matrix.era }}
+          path: public/${{ matrix.era }}
+
+  feed:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: download
+        uses: actions/download-artifact@v4
+        with:
+          pattern: feed_*
+          merge-multiple: true
+          path: public
+
+      - name: prepare
+        run: |
+          tree --dirsfirst --sort name -P '*.apk|*.ipk' --prune --noreport -H "" -T "luci-app-auth-thu feed" --charset utf-8 -o public/index.html public
+          sed -i '/<p class="VERSION">/,/<\/p>/d' public/index.html
+
+      - name: deploy
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./public
+          force_orphan: true

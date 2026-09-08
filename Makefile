@@ -5,10 +5,11 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI for Auth THU
-LUCI_DEPENDS:=+!wget&&!curl&&!wget-ssl:curl
+LUCI_DEPENDS:=+luci-base
 LUCI_PKGARCH:=all
 
-PKG_VERSION:=1.0
+PKG_VERSION:=1.1
+PKG_RELEASE:=1
 
 define Package/$(PKG_NAME)/conffiles
 /usr/bin/goauthing

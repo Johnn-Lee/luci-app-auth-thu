@@ -6,13 +6,19 @@
 				"service": ["list"],
 				"uci": ["get", "load"]
 			},
+			"uci": [ "goauthing" ],
 			"file": {
 				"/usr/bin/goauthing": ["exec"],
 				"/sbin/logread": ["exec"],
+				"/usr/sbin/logread": ["exec"],
 				"/usr/bin/wget": ["exec"],
+				"/bin/wget": ["exec"],
 				"/bin/uname": ["exec"],
+				"/usr/bin/uname": ["exec"],
 				"/bin/mv": ["exec"],
+				"/usr/bin/mv": ["exec"],
 				"/bin/chmod": ["exec"],
+				"/usr/bin/chmod": ["exec"],
 				"/etc/init.d/goauthing": ["exec"]
 			}
 		},
@@ -20,7 +26,14 @@
 			"ubus": {
 				"uci": ["set", "save", "commit"]
 			},
-			"uci": [ "goauthing" ]
+			"uci": [ "goauthing" ],
+			"file": {
+				"/bin/mv": ["exec"],
+				"/usr/bin/mv": ["exec"],
+				"/bin/chmod": ["exec"],
+				"/usr/bin/chmod": ["exec"],
+				"/etc/init.d/goauthing": ["exec"]
+			}
 		}
 	}
 }
