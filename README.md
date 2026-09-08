@@ -97,10 +97,6 @@ make package/luci-app-auth-thu/compile
 - luci-base
 - GoAuthing 核心由 LuCI 界面在线下载, 支持 arm, arm64, x86_64, mips, riscv64 等架构
 
-## 贡献者
-
-[![贡献者](https://contrib.rocks/image?repo=Johnn-Lee/luci-app-auth-thu)](https://github.com/Johnn-Lee/luci-app-auth-thu/graphs/contributors)
-
 ## 特别感谢
 
 - [@z4yx](https://github.com/z4yx)
