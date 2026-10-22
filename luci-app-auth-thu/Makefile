@@ -8,7 +8,7 @@ LUCI_TITLE:=LuCI for Auth THU
 LUCI_DEPENDS:=+luci-base
 LUCI_PKGARCH:=all
 
-PKG_VERSION:=1.1
+PKG_VERSION:=1.1.1
 PKG_RELEASE:=1
 
 define Package/$(PKG_NAME)/conffiles
@@ -18,9 +18,11 @@ endef
 
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
-	/etc/init.d/goauthing enable >/dev/null 2>&1
-	rm -f /tmp/luci-indexcache
-	rm -f /tmp/luci-modulecache/*
+	if [ -z "$${IPKG_INSTROOT}" ]; then
+		/etc/init.d/goauthing enable >/dev/null 2>&1
+		rm -f /tmp/luci-indexcache
+		rm -f /tmp/luci-modulecache/*
+	fi
 exit 0
 endef
 

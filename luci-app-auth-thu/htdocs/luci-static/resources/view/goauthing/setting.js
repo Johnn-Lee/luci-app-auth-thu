@@ -109,16 +109,15 @@ async function generateDownloadUrl() {
 https://github.com/z4yx/GoAuthing/releases/download/${version}/auth-thu.linux.${arch}`;
 }
 
-async function downloadCore() {
-	await uci.load('goauthing');
-	let downloadUrls = uci.get('goauthing', 'config', 'download_urls') || '';
+async function downloadCore(downloadUrls) {
+	downloadUrls = downloadUrls || '';
 
 	// If using template, generate the actual URL
 	if (downloadUrls.includes('${version}') || downloadUrls.includes('${arch}')) {
-		const version = await getLatestVersion();
-		const arch = await detectArch();
+		const version = downloadUrls.includes('${version}') ? await getLatestVersion() : '';
+		const arch = downloadUrls.includes('${arch}') ? await detectArch() : '';
 
-		if (!version) {
+		if (downloadUrls.includes('${version}') && !version) {
 			alert(_('Failed to get latest version from GitHub'));
 			return;
 		}
@@ -128,28 +127,21 @@ async function downloadCore() {
 			.replace(/\$\{arch\}/g, arch);
 	}
 
-	const urls = downloadUrls.split('\n').filter(url => url.trim());
+	const urls = downloadUrls.split('\n').map(url => url.trim()).filter(Boolean);
 
 	if (urls.length === 0) {
 		alert(_('Please configure download URLs first'));
 		return;
 	}
 
-	for (const url of urls) {
-		try {
-			const result = await fs.exec("/usr/bin/wget", ["-O", "/tmp/goauthing", url.trim()]);
-			if (result.code === 0) {
-				await fs.exec("/bin/mv", ["/tmp/goauthing", "/usr/bin/goauthing"]);
-				await fs.exec("/bin/chmod", ["+x", "/usr/bin/goauthing"]);
-				alert(_('Core downloaded successfully'));
-				location.reload();
-				return;
-			}
-		} catch (e) {
-			console.log('Download failed from: ' + url);
-		}
+	try {
+		const result = await fs.exec('/usr/libexec/auth-thu-download', urls);
+		if (result.code !== 0)
+			throw new Error(result.stderr || _('Core download failed'));
+		alert(_('Core downloaded successfully'));
+	} catch (e) {
+		alert(_('Core download failed') + ': ' + e.message);
 	}
-	alert(_('All download attempts failed'));
 }
 
 return view.extend({
@@ -161,8 +153,7 @@ return view.extend({
 	},
 
 	render(data) {
-		let m, s, o;
-		const statusData = data[1];
+		let m, s, o, downloadUrlsOption;
 
 		m = new form.Map('goauthing', _('Auth THU'), _('Auth THU is a network authentication client for campus networks.'));
 
@@ -173,8 +164,8 @@ return view.extend({
 				const res = await getStatus();
 				const service_view = document.getElementById("service_status");
 				const version_view = document.getElementById("version_display");
-				service_view.innerHTML = renderStatus(res.isRunning);
-				version_view.innerHTML = res.version;
+				if (service_view) service_view.innerHTML = renderStatus(res.isRunning);
+				if (version_view) version_view.textContent = res.version;
 			});
 
 			return E('div', { class: 'cbi-section', id: 'status_bar' }, [
@@ -182,7 +173,7 @@ return view.extend({
 			]);
 		}
 
-		s = m.section(form.NamedSection, 'config', 'config');
+		s = m.section(form.NamedSection, 'config', 'goauthing');
 
 		o = s.option(form.Flag, 'enabled', _('Enable'));
 		o.default = o.disabled;
@@ -206,7 +197,7 @@ return view.extend({
 		o.inputtitle = _('Download');
 		o.onclick = async function() {
 			if (confirm(_('Are you sure you want to download the core? This will replace the current version.'))) {
-				await downloadCore();
+				await downloadCore(downloadUrlsOption.formvalue('config') ?? downloadUrlsOption.default);
 			}
 		};
 
@@ -228,6 +219,8 @@ return view.extend({
 				'Template variables supported: <code>${version}</code> (latest from GitHub), <code>${arch}</code> (auto-detected)<br>'));
 		o.rows = 5;
 		o.default = 'https://mirrors.tuna.tsinghua.edu.cn/github-release/z4yx/GoAuthing/LatestRelease/auth-thu.linux.${arch}';
-		o.rmempty = true; return m.render();
+		o.rmempty = true;
+		downloadUrlsOption = o;
+		return m.render();
 	}
 });

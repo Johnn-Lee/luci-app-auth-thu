@@ -1,0 +1,40 @@
+#!/bin/sh
+# Keep the temporary file on the destination filesystem for an atomic rename.
+set -u
+
+PROG=/usr/bin/goauthing
+TMP=
+cleanup() { [ -z "$TMP" ] || rm -f "$TMP"; }
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+[ "$#" -gt 0 ] || { echo 'No download URL supplied.' >&2; exit 1; }
+TMP="$(mktemp /usr/bin/.goauthing.XXXXXX)" || exit 1
+
+for url in "$@"; do
+    case "$url" in
+        https://*) ;;
+        *) echo 'Only HTTPS download URLs are supported.' >&2; continue ;;
+    esac
+    if ! wget -T 30 -O "$TMP" "$url"; then
+        echo 'Download failed; trying the next URL.' >&2
+        continue
+    fi
+    magic="$(dd if="$TMP" bs=4 count=1 2>/dev/null)"
+    if [ "$magic" != "$(printf '\177ELF')" ]; then
+        echo 'Downloaded file is not an ELF executable.' >&2
+        continue
+    fi
+    chmod 0755 "$TMP" || exit 1
+    if ! version="$("$TMP" --version 2>&1)" || [ -z "$version" ]; then
+        echo 'Downloaded core cannot run on this device.' >&2
+        continue
+    fi
+    mv -f "$TMP" "$PROG" || exit 1
+    TMP=
+    printf '%s\n' "$version"
+    exit 0
+done
+
+echo 'All core download attempts failed; the installed core was kept.' >&2
+exit 1

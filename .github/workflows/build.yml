@@ -9,15 +9,24 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   PKG_NAME: luci-app-auth-thu
 
 jobs:
+  test:
+    name: Regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test credentials, downloads and installer key pin
+        run: sh tests/run.sh
+
   build:
     name: ${{ matrix.era }} build
     runs-on: ubuntu-latest
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -27,12 +36,14 @@ jobs:
             sdk_url: https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
             sdk_file: openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
             extension: ipk
+            rootfs_url: https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/openwrt-24.10.8-x86-64-rootfs.tar.gz
 
           # OpenWrt 25.12 and later use apk.
           - era: apk
             sdk_url: https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_file: openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             extension: apk
+            rootfs_url: https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/openwrt-25.12.5-x86-64-rootfs.tar.gz
 
     steps:
       - name: Checkout
@@ -76,6 +87,11 @@ jobs:
           set -euo pipefail
           cd sdk
 
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="$(sed -n 's/^PKG_VERSION:=//p' ../luci-app-auth-thu/Makefile)"
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+
           echo "CONFIG_PACKAGE_${{ env.PKG_NAME }}=m" > .config
 
           if [ "${{ matrix.era }}" = "apk" ]; then
@@ -117,11 +133,32 @@ jobs:
           echo "Built package:"
           ls -lh "dist/${{ env.PKG_NAME }}.${{ matrix.extension }}"
 
+      - name: Sign APK and test trust failures
+        if: matrix.era == 'apk'
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$APK_SIGNING_KEY" || { echo 'APK_SIGNING_KEY secret is required.' >&2; exit 1; }
+          key_file="$RUNNER_TEMP/auth-thu-signing.pem"
+          trap 'rm -f "$key_file"' EXIT
+          umask 077
+          printf '%s\n' "$APK_SIGNING_KEY" > "$key_file"
+          bash scripts/sign-apk.sh "$PWD/sdk/staging_dir/host/bin/apk" \
+            "$PWD/dist/${{ env.PKG_NAME }}.apk" "$key_file" keys/auth-thu.pem
+          cp keys/auth-thu.pem dist/auth-thu.pem
+
+      - name: Test installation in official OpenWrt root
+        env:
+          ROOTFS_URL: ${{ matrix.rootfs_url }}
+        run: bash scripts/test-package.sh '${{ matrix.era }}' "$PWD/dist/${{ env.PKG_NAME }}.${{ matrix.extension }}" "$PWD/keys/auth-thu.pem" "$ROOTFS_URL"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PKG_NAME }}-${{ matrix.era }}
-          path: dist/${{ env.PKG_NAME }}.${{ matrix.extension }}
+          path: dist/*
           if-no-files-found: error
           retention-days: 7
 
@@ -130,6 +167,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Download packages
@@ -145,6 +184,8 @@ jobs:
           set -euo pipefail
           test -f dist/${{ env.PKG_NAME }}.ipk
           test -f dist/${{ env.PKG_NAME }}.apk
+          test -f dist/auth-thu.pem
+          (cd dist && sha256sum *.ipk *.apk auth-thu.pem > SHA256SUMS)
           ls -lh dist
 
       - name: Create GitHub Release
@@ -153,5 +194,7 @@ jobs:
           files: |
             dist/${{ env.PKG_NAME }}.ipk
             dist/${{ env.PKG_NAME }}.apk
+            dist/auth-thu.pem
+            dist/SHA256SUMS
           fail_on_unmatched_files: true
           generate_release_notes: true

@@ -8,18 +8,14 @@
 			},
 			"uci": [ "goauthing" ],
 			"file": {
-				"/usr/bin/goauthing": ["exec"],
+				"/usr/bin/goauthing --version": ["exec"],
 				"/sbin/logread": ["exec"],
 				"/usr/sbin/logread": ["exec"],
-				"/usr/bin/wget": ["exec"],
-				"/bin/wget": ["exec"],
+				"/usr/bin/wget -qO- https://api.github.com/repos/z4yx/GoAuthing/releases/latest": ["exec"],
+				"/bin/wget -qO- https://api.github.com/repos/z4yx/GoAuthing/releases/latest": ["exec"],
+				"/bin/uclient-fetch -qO- https://api.github.com/repos/z4yx/GoAuthing/releases/latest": ["exec"],
 				"/bin/uname": ["exec"],
-				"/usr/bin/uname": ["exec"],
-				"/bin/mv": ["exec"],
-				"/usr/bin/mv": ["exec"],
-				"/bin/chmod": ["exec"],
-				"/usr/bin/chmod": ["exec"],
-				"/etc/init.d/goauthing": ["exec"]
+				"/usr/bin/uname": ["exec"]
 			}
 		},
 		"write": {
@@ -28,10 +24,7 @@
 			},
 			"uci": [ "goauthing" ],
 			"file": {
-				"/bin/mv": ["exec"],
-				"/usr/bin/mv": ["exec"],
-				"/bin/chmod": ["exec"],
-				"/usr/bin/chmod": ["exec"],
+				"/usr/libexec/auth-thu-download": ["exec"],
 				"/etc/init.d/goauthing": ["exec"]
 			}
 		}

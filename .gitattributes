@@ -1,1 +1,5 @@
 * text=auto
+*.sh text eol=lf
+*.pem text eol=lf
+**/root/etc/init.d/* text eol=lf
+**/root/usr/libexec/* text eol=lf
